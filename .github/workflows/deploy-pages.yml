@@ -1,0 +1,97 @@
+name: Deploy site.zip to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - site.zip
+      - .github/workflows/deploy-pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Read repository
+        uses: actions/checkout@v6
+
+      - name: Prepare website
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "site.zip" ]]; then
+            echo "::error::仓库根目录中没有找到 site.zip"
+            exit 1
+          fi
+
+          rm -rf _site temp-site
+          mkdir -p temp-site _site
+
+          unzip -q site.zip -d temp-site
+
+          find temp-site -name ".DS_Store" -delete
+          rm -rf temp-site/__MACOSX
+
+          shopt -s dotglob nullglob
+          items=(temp-site/*)
+          site_root="temp-site"
+
+          # ZIP 外面多包了一层文件夹时，自动进入该文件夹
+          if [[ ! -f "$site_root/index.html" ]] &&
+             [[ ${#items[@]} -eq 1 ]] &&
+             [[ -d "${items[0]}" ]]; then
+            site_root="${items[0]}"
+          fi
+
+          # 继续尝试寻找唯一的 index.html
+          if [[ ! -f "$site_root/index.html" ]]; then
+            mapfile -t indexes < <(
+              find temp-site -maxdepth 4 -type f -name "index.html"
+            )
+
+            if [[ ${#indexes[@]} -eq 1 ]]; then
+              site_root="$(dirname "${indexes[0]}")"
+            else
+              echo "::error::没有找到唯一的网站入口 index.html"
+              exit 1
+            fi
+          fi
+
+          cp -a "$site_root"/. _site/
+          touch _site/.nojekyll
+
+          echo "网站根目录：$site_root"
+          echo "发布文件数：$(find _site -type f | wc -l)"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages website
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Publish GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
